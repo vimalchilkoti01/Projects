@@ -1,1 +1,92 @@
 
+from flask import Flask, render_template, request
+from nltk.sentiment import SentimentIntensityAnalyzer
+import requests
+from bs4 import BeautifulSoup
+import re
+import nltk
+
+# Download VADER lexicon
+nltk.download("vader_lexicon")
+
+app = Flask(__name__)
+
+sia = SentimentIntensityAnalyzer()
+
+# Function to analyze sentiment
+def analyze_sentiment(text):
+    scores = sia.polarity_scores(text)
+    if scores["compound"] > 0.05:
+        return "Positive"
+    elif scores["compound"] < -0.05:
+        return "Negative"
+    else:
+        return "Neutral"
+
+# Function to scrape Amazon reviews
+def scrape_amazon_reviews(url):
+    reviews = []
+    error_message = None
+
+    # Validate Amazon URL
+    if not re.match(r"^https?://(www\.)?amazon\.(com|in|.*)/.+", url):
+        error_message = "Invalid Amazon URL. Please provide a valid product link."
+        return reviews, error_message
+
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:91.0) Gecko/20100101 Firefox/91.0",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        response = requests.get(url, headers=headers)
+        if response.status_code != 200:
+            error_message = f"Failed to fetch the product page. HTTP Status Code: {response.status_code}"
+            return reviews, error_message
+
+        # Save response for debugging
+        with open("debug_amazon_page.html", "w", encoding="utf-8") as file:
+            file.write(response.text)
+
+        soup = BeautifulSoup(response.text, "html.parser")
+
+        # Extract reviews
+        review_elements = soup.find_all("span", {"data-hook": "review-body"})
+        for element in review_elements:
+            reviews.append(element.get_text(strip=True))
+
+        if not reviews:
+            error_message = "No reviews found. Check the product page or anti-bot measures."
+    except Exception as e:
+        error_message = f"Error fetching reviews: {e}"
+
+    return reviews[:10], error_message
+
+@app.route("/")
+def home():
+    return render_template("index.html")
+
+@app.route("/analyze", methods=["POST"])
+def analyze():
+    product_url = request.form["product"]
+
+    reviews, error_message = scrape_amazon_reviews(product_url)
+    analyzed_reviews = []
+
+    if not reviews:
+        return render_template(
+            "result.html",
+            product=product_url,
+            reviews=[],
+            error=error_message or "No reviews found.",
+        )
+
+    for review in reviews:
+        sentiment = analyze_sentiment(review)
+        analyzed_reviews.append({"review": review, "sentiment": sentiment})
+
+    return render_template(
+        "result.html", product=product_url, reviews=analyzed_reviews, error=None
+    )
+
+if __name__ == "__main__":
+    app.run(debug=True)
